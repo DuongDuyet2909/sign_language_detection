@@ -1,35 +1,49 @@
-import pickle                                           # Nạp pickle để đọc dataset và lưu mô hình.
-import os                                               # Nạp os để ghép đường dẫn cạnh file Python.
-import numpy as np                                      # Nạp NumPy để tạo mảng số cho huấn luyện.
-from sklearn.ensemble import RandomForestClassifier     # Nạp RandomForestClassifier: bộ phân loại kết hợp nhiều cây quyết định.
-from sklearn.model_selection import train_test_split    # Nạp hàm chia dữ liệu thành tập huấn luyện và tập kiểm tra.
-from sklearn.metrics import accuracy_score, classification_report  #Nạp cách tính độ chính xác và báo cáo precision, recall, F1 cho từng lớp.
+"""Train and evaluate a Random Forest on 42 hand-landmark features."""
 
-data_path = os.path.join(                               # Bắt đầu ghép đường dẫn đầy đủ đến dataset.
-    os.path.dirname(os.path.abspath(__file__)),         # Lấy đường dẫn thư mục chứa file Python này.
-    "data.pkl"                                          # Tên file dataset cần đọc trong thư mục đó.
-)  
+import argparse
+import pickle
+from pathlib import Path
 
-with open(data_path, "rb") as f:                        # Mở dataset để đọc nhị phân; with tự đóng file sau khi đọc.
-    data_dict = pickle.load(f)                          # Đọc từ điển chứa các mẫu data và các nhãn labels.
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.model_selection import train_test_split
 
-data = np.asarray(data_dict["data"], dtype=np.float32)  # Chuyển mẫu thành mảng float32; các mẫu phải có kích thước đồng nhất.
-data = data.reshape(data.shape[0], -1)                  # Giữ số mẫu, trải phẳng phần còn lại; (N,21,2) trở thành (N,42).
-labels = np.asarray(data_dict["labels"])                # Đổi danh sách nhãn thành mảng, vẫn giữ nhãn chuỗi 0,1,2.
+BASE_DIR = Path(__file__).resolve().parent
 
-X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.2, shuffle=True, random_state=42, stratify=labels)  # Chia 80% học, 20% kiểm tra; xáo trộn, seed 42, giữ gần tỷ lệ lớp bằng stratify; ảnh liên tiếp dễ làm điểm số quá lạc quan.
 
-model = RandomForestClassifier(n_estimators=100, random_state=42)  # Tạo RandomForest gồm 100 cây; seed 42 giúp tái lập kết quả trong cùng điều kiện.
+def train_classifier(data_path: Path, output: Path) -> None:
+    # Only load trusted pickle files: deserialization can execute Python code.
+    with data_path.open("rb") as file:
+        dataset = pickle.load(file)
+    data = np.asarray(dataset["data"], dtype=np.float32)
+    labels = np.asarray(dataset["labels"])
+    if data.size == 0 or labels.ndim != 1 or len(data) != len(labels):
+        raise ValueError("The dataset must contain matching, nonempty data and labels.")
+    data = data.reshape(len(data), -1)
+    if data.shape[1] != 42 or not np.isfinite(data).all():
+        raise ValueError("Each sample must contain exactly 42 finite coordinates.")
+    if set(labels.astype(str)) != {"0", "1", "2"}:
+        raise ValueError("Expected labels 0 (A), 1 (B), 2 (L).")
 
-model.fit(X_train, y_train)                             # Huấn luyện mô hình từ đặc trưng và nhãn của tập học.
+    X_train, X_test, y_train, y_test = train_test_split(
+        data, labels, test_size=0.2, shuffle=True, random_state=42, stratify=labels
+    )
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+    print(f"Train samples: {len(X_train)} | Test samples: {len(X_test)}")
+    print(f"Holdout accuracy: {accuracy_score(y_test, predictions):.2%}")
+    print(classification_report(y_test, predictions, zero_division=0))
+    print("Frames from one recording can inflate this score. Test independent sessions.")
+    with output.open("wb") as file:
+        pickle.dump({"model": model}, file)
+    print(f"Saved model to {output}")
 
-y_pred = model.predict(X_test)                          # Dự đoán nhãn cho các mẫu trong tập kiểm tra.
 
-score = accuracy_score(y_test, y_pred)                  # Tính tỷ lệ mẫu kiểm tra dự đoán đúng, trong khoảng 0 đến 1.
-print("Accuracy:", score)                               # In accuracy dạng tỷ lệ; 0.95 tương ứng 95%.
-print("Classification Report:")                         # In tiêu đề báo cáo đánh giá chi tiết.
-print(classification_report(y_test, y_pred))            # In precision, recall, F1 và số mẫu kiểm tra của từng lớp.
-
-model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model.p")    # Chọn đường dẫn model.p cạnh file Python này.
-with open(model_path, "wb") as f:                                                   # Mở file ghi nhị phân; ghi đè mô hình cũ cùng tên; with tự đóng file.
-    pickle.dump({"model": model}, f)                                                # Lưu từ điển có khóa model để file inference đọc theo cùng cấu trúc.
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data", type=Path, default=BASE_DIR / "data.pkl")
+    parser.add_argument("--output", type=Path, default=BASE_DIR / "model.p")
+    args = parser.parse_args()
+    train_classifier(args.data, args.output)
